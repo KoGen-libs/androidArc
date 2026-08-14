@@ -163,7 +163,9 @@ class BaseMviViewModelTest {
         assertThat(latch.await(2, TimeUnit.SECONDS)).isTrue()
         assertThat(vm.state.value.value).isEqualTo(42)
         assertThat(vm.state.value.finalCount).isEqualTo(1)
-        assertThat(vm.lastJob?.isCompleted).isTrue()
+        // onFinalHook (which the latch above waits on) runs inside the finally block, a moment
+        // before the Job itself actually reaches Completed - poll rather than assert immediately.
+        awaitTrue { vm.lastJob?.isCompleted == true }
     }
 
     @Test
@@ -204,7 +206,9 @@ class BaseMviViewModelTest {
             vm.dispatch(TestAction.CancelAll)
 
             assertThat(latch.await(2, TimeUnit.SECONDS)).isTrue()
-            assertThat(vm.lastJob?.isCancelled).isTrue()
+            // Same reasoning as the onFinal/isCompleted race above: poll rather than assert
+            // immediately - the Job reaches its final Cancelled state slightly after onFinalHook.
+            awaitTrue { vm.lastJob?.isCancelled == true }
             assertThat(vm.state.value.loading).isFalse() // onFinal still hid the loader
             assertThat(vm.state.value.error).isNull() // cancellation is not a reported failure
             assertThat(vm.state.value.finalCount).isEqualTo(1)
