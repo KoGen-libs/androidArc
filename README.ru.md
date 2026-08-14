@@ -50,7 +50,7 @@ class CounterViewModel : BaseMviViewModel<CounterAction, CounterState, CounterEf
 }
 ```
 
-`updateState` обновляет `state: StateFlow<CounterState>`. Для одноразовых событий (навигация, снэкбары) используйте `emitEffect` и подписывайтесь на `effects: Flow<CounterEffect>`. `wrappedRequest` выполняет suspend-вызов на IO и возвращает результат обратно на Main — стандартная форма для action, завязанного на use case. `launchSafely` — это `viewModelScope.launch`, который при необработанном исключении логирует его вместо краша, точно так же, как `dispatch` делает это для самого `handleAction`.
+`updateState` обновляет `state: StateFlow<CounterState>`. Для одноразовых событий (навигация, снэкбары) используйте `emitEffect` и подписывайтесь на `effects: Flow<CounterEffect>`. `wrappedRequest` выполняет suspend-вызов на IO и возвращает результат обратно на Main — стандартная форма для action, завязанного на use case — и возвращает запущенный `Job`, чтобы можно было отменить именно этот запрос (например, если новый поиск должен вытеснить предыдущий). Все job'ы `wrappedRequest` также отслеживаются внутри; `cancelAllRequests()` отменяет их все сразу, например из `onCleared()`. Опциональный колбэк `onFinal` всегда вызывается последним — при успехе, при ошибке и при отмене — удобно, чтобы гасить индикатор загрузки независимо от того, чем закончился запрос; если не передать его — ничего не меняется. `launchSafely` — это `viewModelScope.launch`, который при необработанном исключении логирует его вместо краша, точно так же, как `dispatch` делает это для самого `handleAction`.
 
 ### 3. Подключаем к экрану
 
