@@ -42,6 +42,28 @@ private sealed interface TestEffect : UiEffect {
 }
 
 /**
+ * Reads the private `requestJobs` list [wrappedRequest] tracks its jobs in - there's no public
+ * API for this (nor should there be, it's an implementation detail), but it's the only way to
+ * verify from outside the class that completed requests actually get cleaned up instead of
+ * accumulating for the lifetime of the ViewModel.
+ */
+@Suppress("UNCHECKED_CAST")
+private fun BaseMviViewModel<*, *, *>.trackedRequestJobCount(): Int {
+    val field = BaseMviViewModel::class.java.getDeclaredField("requestJobs")
+    field.isAccessible = true
+    return (field.get(this) as List<Job>).size
+}
+
+/** Polls [condition] until it's true or [timeoutMs] elapses, then asserts it one last time (so a timeout still fails with a normal assertion message) - [wrappedRequest] hops onto the real `Dispatchers.IO`, so tests can't just `advanceUntilIdle()` to reach quiescence. */
+private fun awaitTrue(timeoutMs: Long = 2_000, condition: () -> Boolean) {
+    val deadline = System.currentTimeMillis() + timeoutMs
+    while (System.currentTimeMillis() < deadline && !condition()) {
+        Thread.sleep(10)
+    }
+    assertThat(condition()).isTrue()
+}
+
+/**
  * Minimal concrete [BaseMviViewModel] driving every action through [wrappedRequest] in some
  * shape - [slowGate], when provided, lets a test hold [TestAction.RunSlow]'s request open (e.g.
  * to cancel it mid-flight) instead of it completing immediately. [onFinalHook] gives tests a
@@ -187,6 +209,33 @@ class BaseMviViewModelTest {
             assertThat(vm.state.value.error).isNull() // cancellation is not a reported failure
             assertThat(vm.state.value.finalCount).isEqualTo(1)
         }
+
+    @Test
+    fun `a completed request is removed from the tracked job list, not left behind`() = runTest(dispatcher) {
+        val latch = CountDownLatch(1)
+        val vm = TestViewModel(onFinalHook = { latch.countDown() })
+
+        vm.dispatch(TestAction.RunSuccess(1))
+
+        assertThat(latch.await(2, TimeUnit.SECONDS)).isTrue()
+        // onFinal (which the latch above waits on) runs just before the job itself finishes, so
+        // the internal cleanup can still land a moment after the latch fires - poll rather than
+        // assert immediately.
+        awaitTrue { vm.trackedRequestJobCount() == 0 }
+    }
+
+    @Test
+    fun `an in-flight request stays tracked until it completes, then is removed`() = runTest(dispatcher) {
+        val gate = CompletableDeferred<Unit>()
+        val vm = TestViewModel(slowGate = gate)
+
+        vm.dispatch(TestAction.RunSlow)
+        assertThat(vm.trackedRequestJobCount()).isEqualTo(1) // added synchronously by wrappedRequest
+
+        gate.complete(Unit)
+
+        awaitTrue { vm.trackedRequestJobCount() == 0 }
+    }
 
     @Test
     fun `emitted effects are delivered through the effects flow`() = runTest(dispatcher) {
