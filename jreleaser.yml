@@ -1,0 +1,39 @@
+project:
+  name: androidArc
+  description: Minimal MVI ViewModel base class and Compose screen container for Android
+  authors:
+    - Eugen Kopp
+  license: Apache-2.0
+  inceptionYear: '2026'
+  languages:
+    java:
+      groupId: 'io.github.eugenprog'
+
+release:
+  github:
+    # Tag for the release is created and pushed manually (only the Admin role can create tags -
+    # see the repository ruleset "Protect all tags"). Without skipTag, JReleaser force-recreates
+    # the tag (signed, under the same name) as the CI token, which GitHub blocks as an attempt to
+    # create a protected tag.
+    skipTag: true
+
+# GPG signing settings
+signing:
+  active: ALWAYS
+  pgp:
+    armored: true
+
+# Maven Central deployment settings
+deploy:
+  maven:
+    mavenCentral:
+      sonatype:
+        active: 'ALWAYS'
+        stagingRepositories:
+          - 'androidArc/build/staging-deploy'
+        url: 'https://central.sonatype.com/api/v1/publisher'
+        namespace: 'io.github.eugenprog'
+        # PomChecker (JReleaser's internal check) doesn't understand packaging=aar for Android
+        # libraries and fails validation. The Sonatype Central Portal accepts it fine, so the
+        # local check is disabled. https://github.com/jreleaser/jreleaser.github.io/issues/85
+        verifyPom: false
