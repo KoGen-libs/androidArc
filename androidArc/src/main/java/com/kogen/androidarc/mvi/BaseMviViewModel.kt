@@ -4,8 +4,10 @@ import android.util.Log
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import java.util.concurrent.CopyOnWriteArrayList
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -99,7 +101,11 @@ abstract class BaseMviViewModel<A : UiAction, S : UiState, E : UiEffect>(
 
     /**
      * Runs [call] on IO, then delivers its result/failure back on Main via [onSuccess]/[onError] -
-     * the standard shape for a use-case-backed action. The returned [Job] is also tracked
+     * the standard shape for a use-case-backed action. [onFinal] always runs last, on Main,
+     * regardless of how the request ended (success, error, or cancellation via
+     * [cancelAllRequests]/cancelling the returned [Job] directly) - it's optional and a no-op by
+     * default, so existing callers aren't forced to pass it; the typical use is dismissing a
+     * loading indicator that should disappear no matter what. The returned [Job] is also tracked
      * internally (removed automatically once it completes) so [cancelAllRequests] can cancel every
      * in-flight request at once - callers can additionally hang on to it to cancel that one
      * request individually (e.g. superseding a previous search as a new one starts).
@@ -108,13 +114,25 @@ abstract class BaseMviViewModel<A : UiAction, S : UiState, E : UiEffect>(
         call: suspend () -> T,
         onSuccess: (T) -> Unit = {},
         onError: (Throwable) -> Unit = {},
+        onFinal: () -> Unit = {},
     ): Job {
         val job = viewModelScope.launch(Dispatchers.IO) {
             try {
                 val result = call()
                 withContext(Dispatchers.Main) { onSuccess(result) }
+            } catch (e: CancellationException) {
+                // Rethrow rather than falling into the catch below: a cancelled request (e.g. from
+                // cancelAllRequests) isn't a *failure* of the request, so it shouldn't be reported
+                // through onError, and swallowing it here would also break cooperative
+                // cancellation for whatever cancelled this coroutine in the first place.
+                throw e
             } catch (e: Exception) {
                 withContext(Dispatchers.Main) { onError(e) }
+            } finally {
+                // NonCancellable: this job may be reaching here *because* it was cancelled, and a
+                // plain withContext(Dispatchers.Main) would itself throw immediately in that case,
+                // skipping onFinal - defeating the "always runs" guarantee above.
+                withContext(Dispatchers.Main + NonCancellable) { onFinal() }
             }
         }
         requestJobs += job
