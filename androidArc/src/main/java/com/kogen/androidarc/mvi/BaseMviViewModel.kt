@@ -3,7 +3,9 @@ package com.kogen.androidarc.mvi
 import android.util.Log
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import java.util.concurrent.CopyOnWriteArrayList
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -24,7 +26,8 @@ interface UiEffect
  * [state] [kotlinx.coroutines.flow.StateFlow] and emits one-shot [effects] through a buffered
  * channel (so effects like navigation aren't dropped if emitted before a collector attaches, but
  * also aren't replayed to a later collector). Subclasses implement [handleAction] and drive state
- * via [updateState]/[emitEffect].
+ * via [updateState]/[emitEffect], and issue background requests via [wrappedRequest] - every such
+ * job is tracked and can be cancelled in bulk via [cancelAllRequests].
  */
 abstract class BaseMviViewModel<A : UiAction, S : UiState, E : UiEffect>(
     initialState: S
@@ -88,13 +91,25 @@ abstract class BaseMviViewModel<A : UiAction, S : UiState, E : UiEffect>(
         Log.d("MVI_EFFECT", "✨ Effect: ${effect::class.simpleName}")
     }
 
-    /** Runs [call] on IO, then delivers its result/failure back on Main via [onSuccess]/[onError] - the standard shape for a use-case-backed action. */
+    // Thread-safe: entries are appended from whatever thread calls wrappedRequest (normally
+    // Main, via dispatch), but removed from each job's own completion callback, which can run on
+    // Dispatchers.IO. A plain MutableList would risk a ConcurrentModificationException between
+    // those two sides; CopyOnWriteArrayList makes both safe without an explicit lock.
+    private val requestJobs = CopyOnWriteArrayList<Job>()
+
+    /**
+     * Runs [call] on IO, then delivers its result/failure back on Main via [onSuccess]/[onError] -
+     * the standard shape for a use-case-backed action. The returned [Job] is also tracked
+     * internally (removed automatically once it completes) so [cancelAllRequests] can cancel every
+     * in-flight request at once - callers can additionally hang on to it to cancel that one
+     * request individually (e.g. superseding a previous search as a new one starts).
+     */
     protected fun <T> wrappedRequest(
         call: suspend () -> T,
         onSuccess: (T) -> Unit = {},
         onError: (Throwable) -> Unit = {},
-    ) {
-        viewModelScope.launch(Dispatchers.IO) {
+    ): Job {
+        val job = viewModelScope.launch(Dispatchers.IO) {
             try {
                 val result = call()
                 withContext(Dispatchers.Main) { onSuccess(result) }
@@ -102,5 +117,13 @@ abstract class BaseMviViewModel<A : UiAction, S : UiState, E : UiEffect>(
                 withContext(Dispatchers.Main) { onError(e) }
             }
         }
+        requestJobs += job
+        job.invokeOnCompletion { requestJobs -= job }
+        return job
+    }
+
+    /** Cancels every [wrappedRequest] job still in flight - e.g. from [onCleared] or when a screen navigates away mid-request. */
+    protected fun cancelAllRequests() {
+        requestJobs.forEach { it.cancel() }
     }
 }
