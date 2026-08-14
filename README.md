@@ -1,39 +1,46 @@
-# androidArc
+[![Maven Central](https://img.shields.io/maven-central/v/io.github.eugenprog/androidarc)](https://central.sonatype.com/artifact/io.github.eugenprog/androidarc)
 
-A minimal MVI (Model-View-Intent) architecture layer for Android + Jetpack Compose, extracted
-from [Giraffe](https://github.com/KoGen-libs/Giraffe)'s internal UI layer into a standalone,
-reusable artifact.
+# androidArc: User Guide
 
-It's deliberately small - two files:
+**androidArc** is a minimal MVI (Model-View-Intent) architecture layer for Android + Jetpack Compose - a `ViewModel` base class plus the Compose glue that wires it to a screen. No DI framework, no navigation library, no code generation - just the two building blocks every MVI screen needs.
 
-- **`BaseMviViewModel<Action, State, Effect>`** - a `ViewModel` base class that holds a single
-  `StateFlow<State>` and a buffered `Flow<Effect>` for one-shot events (navigation, snackbars,
-  etc.). Subclasses implement `handleAction`, and drive state/effects via `updateState` /
-  `emitEffect`. Both `dispatch(action)` and any coroutine started with `launchSafely` swallow and
-  log uncaught exceptions instead of crashing the host app.
-- **`ScreenContainerWrapper`** - the standard Compose glue between a `BaseMviViewModel` and its
-  screen: collects state lifecycle-aware, forwards effects to a callback, and renders the screen
-  with `(state, dispatch)`.
+[Читать на русском](README.ru.md)
 
-## Install
+**Core Principles:**
+* **Tiny surface:** two classes - `BaseMviViewModel` and `ScreenContainerWrapper`. Nothing else to learn.
+* **Crash-safe by construction:** an action handler or a background coroutine that throws is logged and swallowed, never propagated to the host app.
+* **Unopinionated:** works with whatever DI and navigation you already use - androidArc only depends on `androidx.lifecycle` and Compose runtime.
+
+---
+
+## 🚀 Installation
 
 ```kotlin
 dependencies {
+    // Check the badge above for the latest version
     implementation("io.github.eugenprog:androidarc:<version>")
 }
 ```
 
-## Usage
+---
+
+## ⚙️ How to Use
+
+### 1. Define the screen's contract
 
 ```kotlin
-// 1. Define your screen's contract
 sealed interface CounterAction : UiAction {
     data object Increment : CounterAction
 }
-data class CounterState(val count: Int = 0) : UiState
-sealed interface CounterEffect : UiEffect
 
-// 2. Implement the ViewModel
+data class CounterState(val count: Int = 0) : UiState
+
+sealed interface CounterEffect : UiEffect
+```
+
+### 2. Implement the ViewModel
+
+```kotlin
 class CounterViewModel : BaseMviViewModel<CounterAction, CounterState, CounterEffect>(CounterState()) {
     override fun handleAction(action: CounterAction) {
         when (action) {
@@ -41,12 +48,18 @@ class CounterViewModel : BaseMviViewModel<CounterAction, CounterState, CounterEf
         }
     }
 }
+```
 
-// 3. Wire it to a screen
+`updateState` drives `state: StateFlow<CounterState>`. For one-shot events (navigation, snackbars), emit through `emitEffect` and collect `effects: Flow<CounterEffect>` instead. `wrappedRequest` runs a suspend call on IO and delivers the result back on Main - the usual shape for a use-case-backed action. `launchSafely` is a `viewModelScope.launch` that logs instead of crashing on an uncaught exception, same as `dispatch` does for `handleAction` itself.
+
+### 3. Wire it to a screen
+
+```kotlin
 @Composable
 fun CounterContainer(viewModel: CounterViewModel = viewModel()) {
     ScreenContainerWrapper(
         viewModel = viewModel,
+        onEffect = { /* handle CounterEffect, e.g. navigate */ },
         screenContent = { state, action ->
             CounterScreen(state = state, action = action)
         },
@@ -54,44 +67,16 @@ fun CounterContainer(viewModel: CounterViewModel = viewModel()) {
 }
 ```
 
-Nothing here is tied to any particular DI or navigation library - `BaseMviViewModel` and
-`ScreenContainerWrapper` only depend on `androidx.lifecycle` and Compose runtime.
+`ScreenContainerWrapper` collects `state` lifecycle-aware and forwards `effects` to `onEffect`, then renders `screenContent` with `(state, dispatch)`.
 
-## Demo app
+---
 
-The `app` module is a small two-screen "Notes" app that puts `androidArc` through its paces the
-same way [Giraffe](https://github.com/KoGen-libs/Giraffe) uses it internally: screens built on
-`BaseMviViewModel` + `ScreenContainerWrapper`, wired up with
-[KoGen DI](https://github.com/EugenProg/AndroidDi) (`@KoGenComponent` / `@KoGenViewModel`) and
-[KoGen Navigation](https://github.com/EugenProg/AndroidNavigation) (`@KoGenScreen`) - both
-code-gen libraries auto-generate the DI graph and nav graph from those annotations, so there's no
-manual wiring beyond declaring the screens and use cases.
+## ✨ Demo app
 
-- **Note list** - streams notes from an in-memory repository via a use case; tapping a note or
-  tapping the FAB dispatches an action, one of which emits a `NavigateToDetails` effect.
-- **Note details** - receives a nav argument, dispatches a `LoadNote` action for it on first
-  composition (the same pattern Giraffe's own `ChatDetailsContainer` uses), and can navigate back.
-
-Run it with:
+The `app` module is a small two-screen "Notes" app (list → details) that puts androidArc through its paces wired up with real DI ([KoGen DI](https://github.com/KoGen-libs/KoGen-Di)) and real navigation ([KoGen Navigation](https://github.com/KoGen-libs/KoGen-Navigation)) code generation - showing that androidArc itself stays agnostic to both. Run it with:
 
 ```
 ./gradlew :app:installDebug
 ```
 
-## Publishing
-
-Released to Maven Central under `io.github.eugenprog:androidarc`, following the same
-JReleaser + Sonatype Central Portal setup as Giraffe (see `jreleaser.yml` and
-`.github/workflows/release.yml`). Publishing a new version:
-
-1. Bump the version and push a tag matching it (tag creation is restricted to the Admin role).
-2. The `Publish to mavencentral` workflow builds, signs, and deploys via JReleaser.
-
-This requires the same GPG/Sonatype secrets Giraffe uses
-(`JRELEASER_GPG_PUBLIC_KEY`, `JRELEASER_GPG_SECRET_KEY`, `JRELEASER_GPG_PASSPHRASE`,
-`JRELEASER_MAVENCENTRAL_SONATYPE_USERNAME`, `JRELEASER_MAVENCENTRAL_SONATYPE_TOKEN`) configured as
-repository secrets here as well - GitHub doesn't let secret values be copied between repos.
-
-## License
-
-Apache License 2.0 - see [LICENSE](LICENSE).
+[README.ru](README.ru.md)
