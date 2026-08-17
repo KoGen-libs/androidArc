@@ -9,6 +9,7 @@ import io.mockk.unmockkStatic
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.Job
@@ -73,6 +74,10 @@ private fun awaitTrue(timeoutMs: Long = 2_000, condition: () -> Boolean) {
 private class TestViewModel(
     private val slowGate: CompletableDeferred<Unit>? = null,
     private val onFinalHook: () -> Unit = {},
+    // Deliberately defaults to Dispatchers.IO, same as wrappedRequest itself - only the dispatcher
+    // param's own dedicated test below overrides this, to prove the override actually reaches
+    // wrappedRequest instead of a hardcoded Dispatchers.IO silently winning anyway.
+    private val requestDispatcher: CoroutineDispatcher = Dispatchers.IO,
 ) : BaseMviViewModel<TestAction, TestState, TestEffect>(TestState()) {
 
     var lastJob: Job? = null
@@ -85,6 +90,7 @@ private class TestViewModel(
                     call = { action.value },
                     onSuccess = { value -> updateState { it.copy(value = value) } },
                     onFinal = { updateState { it.copy(finalCount = it.finalCount + 1) }; onFinalHook() },
+                    dispatcher = requestDispatcher,
                 )
             }
 
@@ -249,5 +255,47 @@ class BaseMviViewModelTest {
             vm.dispatch(TestAction.Ping)
             assertThat(awaitItem()).isEqualTo(TestEffect.Pong)
         }
+    }
+
+    @Test
+    fun `wrappedRequest's dispatcher param overrides the Dispatchers-IO default`() = runTest(dispatcher) {
+        // The same UnconfinedTestDispatcher already driving this whole test, passed straight
+        // through to wrappedRequest - unlike every other test here, this needs no latch/awaitTrue
+        // polling at all: with a real Dispatchers.IO hop there's no way to observe completion
+        // synchronously, but an UnconfinedTestDispatcher runs its work eagerly, inline, so the
+        // request has already finished by the time dispatch() returns.
+        val vm = TestViewModel(requestDispatcher = dispatcher)
+
+        vm.dispatch(TestAction.RunSuccess(42))
+
+        assertThat(vm.state.value.value).isEqualTo(42)
+        assertThat(vm.state.value.finalCount).isEqualTo(1)
+    }
+
+    @Test
+    fun `awaitIdle suspends until every tracked wrappedRequest job has finished`() = runTest(dispatcher) {
+        val gate = CompletableDeferred<Unit>()
+        val vm = TestViewModel(slowGate = gate)
+
+        vm.dispatch(TestAction.RunSlow)
+        assertThat(vm.state.value.loading).isTrue() // still in flight
+
+        gate.complete(Unit)
+        vm.awaitIdle()
+
+        // No latch, no awaitTrue polling needed here either - awaitIdle itself is the
+        // synchronization point, which is the entire point of adding it: generated test
+        // scaffolding (or any other caller outside this class) can await this instead of guessing
+        // whether the action it just dispatched happened to be synchronous or not.
+        assertThat(vm.state.value.loading).isFalse()
+        assertThat(vm.state.value.finalCount).isEqualTo(1)
+        assertThat(vm.trackedRequestJobCount()).isEqualTo(0)
+    }
+
+    @Test
+    fun `awaitIdle returns immediately when nothing is tracked`() = runTest(dispatcher) {
+        val vm = TestViewModel()
+
+        vm.awaitIdle() // must not hang - nothing was ever dispatched
     }
 }
