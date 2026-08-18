@@ -5,6 +5,7 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import java.util.concurrent.CopyOnWriteArrayList
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.NonCancellable
@@ -13,6 +14,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.receiveAsFlow
 import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.joinAll
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
@@ -109,14 +111,21 @@ abstract class BaseMviViewModel<A : UiAction, S : UiState, E : UiEffect>(
      * internally (removed automatically once it completes) so [cancelAllRequests] can cancel every
      * in-flight request at once - callers can additionally hang on to it to cancel that one
      * request individually (e.g. superseding a previous search as a new one starts).
+     *
+     * [dispatcher] defaults to [Dispatchers.IO] - hardcoding it with no way to override was a real
+     * gap: nothing about *this* function should force a specific dispatcher on every caller. Most
+     * subclasses will never touch this parameter (the default is exactly what they want), but it's
+     * still the correct default value for a reusable base-class function to expose, same as
+     * [onError]/[onFinal] above.
      */
     protected fun <T> wrappedRequest(
         call: suspend () -> T,
         onSuccess: (T) -> Unit = {},
         onError: (Throwable) -> Unit = {},
         onFinal: () -> Unit = {},
+        dispatcher: CoroutineDispatcher = Dispatchers.IO,
     ): Job {
-        val job = viewModelScope.launch(Dispatchers.IO) {
+        val job = viewModelScope.launch(dispatcher) {
             try {
                 val result = call()
                 withContext(Dispatchers.Main) { onSuccess(result) }
@@ -143,5 +152,22 @@ abstract class BaseMviViewModel<A : UiAction, S : UiState, E : UiEffect>(
     /** Cancels every [wrappedRequest] job still in flight - e.g. from [onCleared] or when a screen navigates away mid-request. */
     protected fun cancelAllRequests() {
         requestJobs.forEach { it.cancel() }
+    }
+
+    /**
+     * Suspends until every [wrappedRequest] job currently tracked has finished (successfully,
+     * with an error, or cancelled) - a snapshot of what's in flight *right now*, not a wait for
+     * requests started after this is called. Public (unlike the rest of this class's own
+     * protected helpers) specifically so a test holding a plain `BaseMviViewModel` instance from
+     * the outside - as generated test scaffolding does - can call it: `dispatch()` returns as
+     * soon as [handleAction] returns, which for a [wrappedRequest]-backed action is *before* its
+     * background work has actually finished (it runs on [dispatcher], not synchronously) - reading
+     * [state] immediately after `dispatch()` can observe stale, pre-request state. Awaiting this
+     * closes that gap without needing every caller to know whether the action it just dispatched
+     * happened to be synchronous or not: for a synchronous action there's simply nothing tracked,
+     * so this returns immediately.
+     */
+    suspend fun awaitIdle() {
+        requestJobs.toList().joinAll()
     }
 }

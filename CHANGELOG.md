@@ -21,6 +21,15 @@ All notable changes to this project are documented here. Format loosely follows
 - Unit test suite for `BaseMviViewModel`: action-handling crash safety, `wrappedRequest`'s
   success/error/cancellation paths, `onFinal`, `cancelAllRequests`, tracked-job cleanup, and
   effect delivery.
+- `wrappedRequest`'s optional `dispatcher` parameter (defaults to `Dispatchers.IO`, same behavior
+  as before for every existing caller) - lets a caller run the request on a different dispatcher,
+  e.g. a `TestDispatcher`, instead of it always being hardcoded.
+- `awaitIdle()` - suspends until every `wrappedRequest` job tracked at the moment it's called has
+  finished. Public, unlike this class's other helpers: `wrappedRequest` hops onto its own
+  dispatcher rather than running synchronously inside `handleAction`, so `dispatch()` can return
+  before that work is actually done - a test (or generated test scaffolding) holding a plain
+  `BaseMviViewModel` reference from outside can await this instead of guessing whether the action
+  it just dispatched happened to be synchronous.
 
 ### Fixed
 - `wrappedRequest`'s `catch (e: Exception)` also caught `CancellationException`, so cancelling a
